@@ -1,50 +1,47 @@
 """
-BacchaLM — fast edition
+BacchaLM
 
 Usage:
     python BacchaLM.py train
-    python BacchaLM.py generate "traffic jam is"
+    python BacchaLM.py generate "the cat"
 """
 
+import os
 import sys
 import json
 import numpy as np
-from collections import Counter
 
-# ---------------------------------------------------------------------------
-# Hyperparameters
-# ---------------------------------------------------------------------------
-T = 8
-D = 64
-LR = 3e-3
-STEPS = 3000
-BATCH = 64
+
+
+
+T = 4          # context length (words the model sees when training or generating)
+D = 32        # embedding dimension - idk what this is. i got this from deepseek
+LR = 0.1       # learning rate - i guess it's okay for now
+STEPS = 5000   # training steps - might need to increase
+BATCH = 8      # batch size
 SEED = 0
-MIN_COUNT = 2
-DATA_PATH = "data/dataset.txt"
-CKPT_PATH = "BacchaLM.npz"
-META_PATH = "BacchaLM.json"
+DATA_PATH = "data/dataset.txt"      #i don't have a dataset but will make one
+CKPT_PATH = "BacchaLM.npz"          #the trained weights will be saved in this
+META_PATH = "BacchaLM.json"         #vocab and config will be saved in this
 
-np.random.seed(SEED)
+np.random.seed(SEED)    #meh
 
-# ---------------------------------------------------------------------------
-# Data
-# ---------------------------------------------------------------------------
+
+
+#Loading Dataset
 def load_text(path):
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
-def build_vocab(text, min_count=MIN_COUNT):
-    words = text.lower().split()
-    counts = Counter(words)
-    common = sorted(w for w, c in counts.items() if c >= min_count)
-    vocab = ["<unk>"] + common
-    vocab_set = set(common)
-    words = [w if w in vocab_set else "<unk>" for w in words]
+#vocabulary building
+def build_vocab(text):
+    words = text.split()
+    vocab = sorted(set(words))
     word_to_id = {w: i for i, w in enumerate(vocab)}
     id_to_word = {i: w for w, i in word_to_id.items()}
     return words, vocab, word_to_id, id_to_word
 
+#dataset making
 def make_dataset(words, word_to_id):
     ids = [word_to_id[w] for w in words]
     X, Y = [], []
@@ -53,27 +50,39 @@ def make_dataset(words, word_to_id):
         Y.append(ids[i + 1 : i + T + 1])
     return np.array(X, dtype=np.int64), np.array(Y, dtype=np.int64)
 
-# ---------------------------------------------------------------------------
-# Math helpers
-# ---------------------------------------------------------------------------
+
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------
+
+#softmax - Converts a vector of raw scores into a probability distribution.
 def softmax(x, axis=-1):
     x = x - x.max(axis=axis, keepdims=True)
     e = np.exp(x)
     return e / e.sum(axis=axis, keepdims=True)
 
+
+#max(0, x). Nonlinearity. Without it, stacking linear layers would just be one big linear layer — the model couldn't learn anything complex.
+# need to learn more about this
 def relu(x):
     return np.maximum(0, x)
 
+
+#Creates a random weight matrix of shape (in_dim, out_dim). scale=0.1 keeps values small so early gradients don't explode.
 def init_linear(in_dim, out_dim, scale=0.1):
     return (np.random.randn(in_dim, out_dim) * scale).astype(np.float32)
 
-# ---------------------------------------------------------------------------
-# Parameters
-# ---------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------
+
+#entire model as a dictionary of arrays.
 def init_params(V):
     return {
-        "E":    (np.random.randn(V, D) * 0.1).astype(np.float32),
-        "P":    (np.random.randn(T, D) * 0.1).astype(np.float32),
+        "E":    (np.random.randn(V, D) * 0.1).astype(np.float32),   # token embeddings
+        "P":    (np.random.randn(T, D) * 0.1).astype(np.float32),   # position embeddings
         "Wq":   init_linear(D, D),
         "Wk":   init_linear(D, D),
         "Wv":   init_linear(D, D),
@@ -86,44 +95,67 @@ def init_params(V):
         "bout": np.zeros(V, dtype=np.float32),
     }
 
-# ---------------------------------------------------------------------------
-# Attention
-# ---------------------------------------------------------------------------
+'''
+Param	            Shape	            Purpose
+E	                (V, D)	            Token embedding table. Row i = vector for word id i.
+P	                (T, D)	            Position embedding. Row t = vector for position t.
+Wq, Wk, Wv	        (D, D)	            Attention projections: query, key, value.
+Wo	                (D, D)	            Attention output projection (back to D).
+W1, b1	            (D, 4D), (4D,)	    Feedforward layer 1. Expands 4×.
+W2, b2	            (4D, D), (D,)	    Feedforward layer 2. Compresses back.
+Wout, bout	        (D, V), (V,)	    Output projection to vocab size.
+'''
+
+
+
+
+
+#THE OG ATTENTION
+# need to understand it more clearfully, currently using deepseek
+
 def attention(Q, K, V):
+
     N, T_, D_ = Q.shape
-    scores = Q @ K.transpose(0, 2, 1) / np.sqrt(D_)
+    
+    scores = Q @ K.transpose(0, 2, 1) / np.sqrt(D_)           # (N, T, T)
+    
     mask = np.triu(np.ones((T_, T_), dtype=bool), k=1)
+    
     scores = np.where(mask, -1e9, scores)
+    
     A = softmax(scores, axis=-1)
+    
     out = A @ V
+    
     return out, A
 
-# ---------------------------------------------------------------------------
-# Forward
-# ---------------------------------------------------------------------------
+
+
+
+#plugging attention to the model.
 def forward(X, p):
-    h0 = p["E"][X] + p["P"][None, :, :]
+    h0 = p["E"][X] + p["P"][None, :, :]                        # (N, T, D)
 
     Q = h0 @ p["Wq"]
     K = h0 @ p["Wk"]
     V = h0 @ p["Wv"]
     attn_out, A = attention(Q, K, V)
-    h_attn = h0 + attn_out @ p["Wo"]
+    h_attn = h0 + attn_out @ p["Wo"]                           # residual
 
     h_ff_in = h_attn
     h_ff_hidden = relu(h_ff_in @ p["W1"] + p["b1"])
-    h_final = h_ff_in + h_ff_hidden @ p["W2"] + p["b2"]
+    h_final = h_ff_in + h_ff_hidden @ p["W2"] + p["b2"]        # residual
 
-    logits = h_final @ p["Wout"] + p["bout"]
+    logits = h_final @ p["Wout"] + p["bout"]                   # (N, T, V)
     probs = softmax(logits, axis=-1)
 
     cache = (h0, Q, K, V, A, attn_out, h_attn,
              h_ff_in, h_ff_hidden, h_final, logits, probs)
     return logits, probs, cache
 
-# ---------------------------------------------------------------------------
-# Loss
-# ---------------------------------------------------------------------------
+
+
+#loss function - cross entropy
 def cross_entropy(logits, Y):
     N, T_, V_ = logits.shape
     probs = softmax(logits, axis=-1)
@@ -131,39 +163,49 @@ def cross_entropy(logits, Y):
     loss = -np.log(correct + 1e-9).mean()
     return loss, probs
 
+
+
+
+#toooooo big
 # ---------------------------------------------------------------------------
-# Backward (returns gradients)
+# Backward pass
 # ---------------------------------------------------------------------------
-def backward(X, Y, p, cache):
+def backward(X, Y, p, cache, lr):
     (h0, Q, K, V, A, attn_out, h_attn,
      h_ff_in, h_ff_hidden, h_final, logits, probs) = cache
     N, T_, D_ = h0.shape
     V_ = p["E"].shape[0]
 
+    # dL/dlogits for softmax + cross-entropy
     dlogits = probs.copy()
     dlogits[np.arange(N)[:, None], np.arange(T_)[None, :], Y] -= 1
     dlogits /= (N * T_)
 
+    # ---- output projection ----
     dWout = h_final.reshape(-1, D_).T @ dlogits.reshape(-1, V_)
     dbout = dlogits.reshape(-1, V_).sum(axis=0)
-    dh_final = dlogits @ p["Wout"].T
+    dh_final = dlogits @ p["Wout"].T                           # (N, T, D)
 
-    dh_ff_in_res = dh_final
+    # ---- feedforward block ----
+    dh_ff_in_res = dh_final                                    # residual path
     d_hidden = dh_final @ p["W2"].T
-    d_hidden[h_ff_hidden <= 0] = 0
+    d_hidden[h_ff_hidden <= 0] = 0                             # relu backward
     dW2 = h_ff_hidden.reshape(-1, 4 * D_).T @ dh_final.reshape(-1, D_)
     db2 = dh_final.reshape(-1, D_).sum(axis=0)
     dW1 = h_ff_in.reshape(-1, D_).T @ d_hidden.reshape(-1, 4 * D_)
     db1 = d_hidden.reshape(-1, 4 * D_).sum(axis=0)
     dh_ff_in = d_hidden @ p["W1"].T
-    dh_attn = dh_ff_in_res + dh_ff_in
+    dh_attn = dh_ff_in_res + dh_ff_in                          # (N, T, D)
 
+    # ---- attention output projection ----
     dWo = attn_out.reshape(-1, D_).T @ dh_attn.reshape(-1, D_)
     d_attn_out = (dh_attn @ p["Wo"].T).reshape(N, T_, D_)
 
-    dA = d_attn_out @ V.transpose(0, 2, 1)
-    dV = A.transpose(0, 2, 1) @ d_attn_out
+    # ---- attention block ----
+    dA = d_attn_out @ V.transpose(0, 2, 1)                     # (N, T, T)
+    dV = A.transpose(0, 2, 1) @ d_attn_out                     # (N, T, D)
 
+    # softmax backward: dS = A * (dA - sum(dA*A))
     dS = A * (dA - (dA * A).sum(axis=-1, keepdims=True))
     dS /= np.sqrt(D_)
 
@@ -176,42 +218,27 @@ def backward(X, Y, p, cache):
     dh0_attn = dQ @ p["Wq"].T + dK @ p["Wk"].T + dV @ p["Wv"].T
     dh0 = dh_attn + dh0_attn
 
+    # ---- embedding + positional gradients ----
     dE = np.zeros_like(p["E"])
     np.add.at(dE, X, dh0)
     dP = dh0.sum(axis=0)
 
-    return {
+    # ---- SGD update ----
+    grads = {
         "E": dE, "P": dP,
         "Wq": dWq, "Wk": dWk, "Wv": dWv, "Wo": dWo,
         "W1": dW1, "b1": db1, "W2": dW2, "b2": db2,
         "Wout": dWout, "bout": dbout,
     }
-
-# ---------------------------------------------------------------------------
-# Adam optimizer
-# ---------------------------------------------------------------------------
-def init_adam_state(p):
-    return {
-        "m": {k: np.zeros_like(v) for k, v in p.items()},
-        "v": {k: np.zeros_like(v) for k, v in p.items()},
-        "t": 0,
-    }
-
-def adam_step(p, grads, state, lr, beta1=0.9, beta2=0.999, eps=1e-8):
-    state["t"] += 1
-    t = state["t"]
     for k in p:
-        g = grads[k]
-        state["m"][k] = beta1 * state["m"][k] + (1 - beta1) * g
-        state["v"][k] = beta2 * state["v"][k] + (1 - beta2) * (g * g)
-        m_hat = state["m"][k] / (1 - beta1 ** t)
-        v_hat = state["v"][k] / (1 - beta2 ** t)
-        p[k] = (p[k] - lr * m_hat / (np.sqrt(v_hat) + eps)).astype(np.float32)
+        p[k] = (p[k] - lr * grads[k]).astype(np.float32)
     return p
 
-# ---------------------------------------------------------------------------
-# Training
-# ---------------------------------------------------------------------------
+
+
+
+
+#training
 def train():
     text = load_text(DATA_PATH)
     words, vocab, word_to_id, id_to_word = build_vocab(text)
@@ -221,23 +248,22 @@ def train():
     X, Y = make_dataset(words, word_to_id)
     N = X.shape[0]
     print(f"Training samples: {N}")
-    print(f"Config: T={T}, D={D}, BATCH={BATCH}, LR={LR}, STEPS={STEPS}, V={V}")
 
     p = init_params(V)
-    state = init_adam_state(p)
 
     for step in range(STEPS):
+        # random minibatch
         idx = np.random.randint(0, N, size=min(BATCH, N))
         Xb, Yb = X[idx], Y[idx]
 
         logits, probs, cache = forward(Xb, p)
         loss, _ = cross_entropy(logits, Yb)
-        grads = backward(Xb, Yb, p, cache)
-        p = adam_step(p, grads, state, lr=LR)
+        p = backward(Xb, Yb, p, cache, LR)
 
         if step % 200 == 0 or step == STEPS - 1:
             print(f"step {step:5d}  loss {loss:.4f}")
 
+    # save
     np.savez(CKPT_PATH, **p)
     with open(META_PATH, "w") as f:
         json.dump({
@@ -247,7 +273,15 @@ def train():
         }, f)
     print(f"Saved {CKPT_PATH} and {META_PATH}")
 
-# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+#model loader
 # Load & generate
 # ---------------------------------------------------------------------------
 def load_model():
@@ -257,15 +291,16 @@ def load_model():
         meta = json.load(f)
     word_to_id = meta["word_to_id"]
     id_to_word = {int(k): v for k, v in meta["id_to_word"].items()}
-    return p, word_to_id, id_to_word, meta["V"], meta["T"]
+    return p, word_to_id, id_to_word, meta["V"]
 
+#generator
 def generate(prompt, n_words=15, temperature=1.0):
-    p, word_to_id, id_to_word, V, T_loaded = load_model()
-    ids = [word_to_id.get(w, 0) for w in prompt.lower().split()]
+    p, word_to_id, id_to_word, V = load_model()
+    ids = [word_to_id.get(w, 0) for w in prompt.split()]
 
     for _ in range(n_words):
-        ctx = ids[-T_loaded:]
-        while len(ctx) < T_loaded:
+        ctx = ids[-T:]
+        while len(ctx) < T:
             ctx = [0] + ctx
         Xg = np.array([ctx], dtype=np.int64)
         logits, probs, _ = forward(Xg, p)
@@ -276,13 +311,15 @@ def generate(prompt, n_words=15, temperature=1.0):
 
     return " ".join(id_to_word[i] for i in ids)
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+
+
+
+
+#chores - CLI
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python BacchaLM.py train")
-        print("       python BacchaLM.py generate \"traffic jam is\" [n_words]")
+        print("Usage: python bacchaLM.py train")
+        print("       python bacchaLM.py generate \"traffic jam is\"")
         sys.exit(1)
 
     cmd = sys.argv[1]

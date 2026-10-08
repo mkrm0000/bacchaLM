@@ -1,0 +1,14 @@
+the cat sat on the mat
+the dog sat on the log
+the cat ran to the mat
+the dog ran to the log
+a cat sat on a mat
+a dog sat on a log
+the cat saw the dog
+the dog saw the cat
+the cat ran to the dog
+the dog ran to the cat
+a cat saw a dog
+a dog saw a cat
+the cat sat on the log
+the dog sat on the mat
