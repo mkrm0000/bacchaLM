@@ -235,3 +235,40 @@ def backward(X, Y, p, cache, lr):
     return p
 
 
+
+
+
+#training
+def train():
+    text = load_text(DATA_PATH)
+    words, vocab, word_to_id, id_to_word = build_vocab(text)
+    V = len(vocab)
+    print(f"Loaded {len(words)} words, vocab size {V}")
+
+    X, Y = make_dataset(words, word_to_id)
+    N = X.shape[0]
+    print(f"Training samples: {N}")
+
+    p = init_params(V)
+
+    for step in range(STEPS):
+        # random minibatch
+        idx = np.random.randint(0, N, size=min(BATCH, N))
+        Xb, Yb = X[idx], Y[idx]
+
+        logits, probs, cache = forward(Xb, p)
+        loss, _ = cross_entropy(logits, Yb)
+        p = backward(Xb, Yb, p, cache, LR)
+
+        if step % 200 == 0 or step == STEPS - 1:
+            print(f"step {step:5d}  loss {loss:.4f}")
+
+    # save
+    np.savez(CKPT_PATH, **p)
+    with open(META_PATH, "w") as f:
+        json.dump({
+            "word_to_id": word_to_id,
+            "id_to_word": {str(k): v for k, v in id_to_word.items()},
+            "T": T, "D": D, "V": V,
+        }, f)
+    print(f"Saved {CKPT_PATH} and {META_PATH}")
