@@ -50,3 +50,23 @@ def make_dataset(words, word_to_id):
         Y.append(ids[i + 1 : i + T + 1])
     return np.array(X, dtype=np.int64), np.array(Y, dtype=np.int64)
 
+
+
+#softmax - Converts a vector of raw scores into a probability distribution.
+def softmax(x, axis=-1):
+    x = x - x.max(axis=axis, keepdims=True)
+    e = np.exp(x)
+    return e / e.sum(axis=axis, keepdims=True)
+
+
+#max(0, x). Nonlinearity. Without it, stacking linear layers would just be one big linear layer — the model couldn't learn anything complex.
+# need to learn more about this
+def relu(x):
+    return np.maximum(0, x)
+
+
+#Creates a random weight matrix of shape (in_dim, out_dim). scale=0.1 keeps values small so early gradients don't explode.
+def init_linear(in_dim, out_dim, scale=0.1):
+    return (np.random.randn(in_dim, out_dim) * scale).astype(np.float32)
+
+
