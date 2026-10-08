@@ -106,3 +106,27 @@ W2, b2	            (4D, D), (D,)	    Feedforward layer 2. Compresses back.
 Wout, bout	        (D, V), (V,)	    Output projection to vocab size.
 '''
 
+
+
+
+
+#THE OG ATTENTION
+# need to understand it more clearfully, currently using deepseek
+
+def attention(Q, K, V):
+
+    N, T_, D_ = Q.shape
+    
+    scores = Q @ K.transpose(0, 2, 1) / np.sqrt(D_)           # (N, T, T)
+    
+    mask = np.triu(np.ones((T_, T_), dtype=bool), k=1)
+    
+    scores = np.where(mask, -1e9, scores)
+    
+    A = softmax(scores, axis=-1)
+    
+    out = A @ V
+    
+    return out, A
+
+
