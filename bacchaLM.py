@@ -130,3 +130,108 @@ def attention(Q, K, V):
     return out, A
 
 
+
+
+#plugging attention to the model.
+def forward(X, p):
+    h0 = p["E"][X] + p["P"][None, :, :]                        # (N, T, D)
+
+    Q = h0 @ p["Wq"]
+    K = h0 @ p["Wk"]
+    V = h0 @ p["Wv"]
+    attn_out, A = attention(Q, K, V)
+    h_attn = h0 + attn_out @ p["Wo"]                           # residual
+
+    h_ff_in = h_attn
+    h_ff_hidden = relu(h_ff_in @ p["W1"] + p["b1"])
+    h_final = h_ff_in + h_ff_hidden @ p["W2"] + p["b2"]        # residual
+
+    logits = h_final @ p["Wout"] + p["bout"]                   # (N, T, V)
+    probs = softmax(logits, axis=-1)
+
+    cache = (h0, Q, K, V, A, attn_out, h_attn,
+             h_ff_in, h_ff_hidden, h_final, logits, probs)
+    return logits, probs, cache
+
+
+
+#loss function - cross entropy
+def cross_entropy(logits, Y):
+    N, T_, V_ = logits.shape
+    probs = softmax(logits, axis=-1)
+    correct = probs[np.arange(N)[:, None], np.arange(T_)[None, :], Y]
+    loss = -np.log(correct + 1e-9).mean()
+    return loss, probs
+
+
+
+
+#toooooo big
+# ---------------------------------------------------------------------------
+# Backward pass
+# ---------------------------------------------------------------------------
+def backward(X, Y, p, cache, lr):
+    (h0, Q, K, V, A, attn_out, h_attn,
+     h_ff_in, h_ff_hidden, h_final, logits, probs) = cache
+    N, T_, D_ = h0.shape
+    V_ = p["E"].shape[0]
+
+    # dL/dlogits for softmax + cross-entropy
+    dlogits = probs.copy()
+    dlogits[np.arange(N)[:, None], np.arange(T_)[None, :], Y] -= 1
+    dlogits /= (N * T_)
+
+    # ---- output projection ----
+    dWout = h_final.reshape(-1, D_).T @ dlogits.reshape(-1, V_)
+    dbout = dlogits.reshape(-1, V_).sum(axis=0)
+    dh_final = dlogits @ p["Wout"].T                           # (N, T, D)
+
+    # ---- feedforward block ----
+    dh_ff_in_res = dh_final                                    # residual path
+    d_hidden = dh_final @ p["W2"].T
+    d_hidden[h_ff_hidden <= 0] = 0                             # relu backward
+    dW2 = h_ff_hidden.reshape(-1, 4 * D_).T @ dh_final.reshape(-1, D_)
+    db2 = dh_final.reshape(-1, D_).sum(axis=0)
+    dW1 = h_ff_in.reshape(-1, D_).T @ d_hidden.reshape(-1, 4 * D_)
+    db1 = d_hidden.reshape(-1, 4 * D_).sum(axis=0)
+    dh_ff_in = d_hidden @ p["W1"].T
+    dh_attn = dh_ff_in_res + dh_ff_in                          # (N, T, D)
+
+    # ---- attention output projection ----
+    dWo = attn_out.reshape(-1, D_).T @ dh_attn.reshape(-1, D_)
+    d_attn_out = (dh_attn @ p["Wo"].T).reshape(N, T_, D_)
+
+    # ---- attention block ----
+    dA = d_attn_out @ V.transpose(0, 2, 1)                     # (N, T, T)
+    dV = A.transpose(0, 2, 1) @ d_attn_out                     # (N, T, D)
+
+    # softmax backward: dS = A * (dA - sum(dA*A))
+    dS = A * (dA - (dA * A).sum(axis=-1, keepdims=True))
+    dS /= np.sqrt(D_)
+
+    dQ = dS @ K
+    dK = dS.transpose(0, 2, 1) @ Q
+
+    dWq = h0.reshape(-1, D_).T @ dQ.reshape(-1, D_)
+    dWk = h0.reshape(-1, D_).T @ dK.reshape(-1, D_)
+    dWv = h0.reshape(-1, D_).T @ dV.reshape(-1, D_)
+    dh0_attn = dQ @ p["Wq"].T + dK @ p["Wk"].T + dV @ p["Wv"].T
+    dh0 = dh_attn + dh0_attn
+
+    # ---- embedding + positional gradients ----
+    dE = np.zeros_like(p["E"])
+    np.add.at(dE, X, dh0)
+    dP = dh0.sum(axis=0)
+
+    # ---- SGD update ----
+    grads = {
+        "E": dE, "P": dP,
+        "Wq": dWq, "Wk": dWk, "Wv": dWv, "Wo": dWo,
+        "W1": dW1, "b1": db1, "W2": dW2, "b2": db2,
+        "Wout": dWout, "bout": dbout,
+    }
+    for k in p:
+        p[k] = (p[k] - lr * grads[k]).astype(np.float32)
+    return p
+
+
