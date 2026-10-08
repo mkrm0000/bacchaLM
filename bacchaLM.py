@@ -272,3 +272,63 @@ def train():
             "T": T, "D": D, "V": V,
         }, f)
     print(f"Saved {CKPT_PATH} and {META_PATH}")
+
+
+
+
+
+
+
+
+
+#model loader
+# Load & generate
+# ---------------------------------------------------------------------------
+def load_model():
+    p_npz = np.load(CKPT_PATH)
+    p = {k: p_npz[k] for k in p_npz.files}
+    with open(META_PATH, "r") as f:
+        meta = json.load(f)
+    word_to_id = meta["word_to_id"]
+    id_to_word = {int(k): v for k, v in meta["id_to_word"].items()}
+    return p, word_to_id, id_to_word, meta["V"]
+
+#generator
+def generate(prompt, n_words=15, temperature=1.0):
+    p, word_to_id, id_to_word, V = load_model()
+    ids = [word_to_id.get(w, 0) for w in prompt.split()]
+
+    for _ in range(n_words):
+        ctx = ids[-T:]
+        while len(ctx) < T:
+            ctx = [0] + ctx
+        Xg = np.array([ctx], dtype=np.int64)
+        logits, probs, _ = forward(Xg, p)
+        last = logits[0, -1] / max(temperature, 1e-6)
+        pr = softmax(last)
+        next_id = int(np.random.choice(V, p=pr))
+        ids.append(next_id)
+
+    return " ".join(id_to_word[i] for i in ids)
+
+
+
+
+
+#chores - CLI
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python bacchaLM.py train")
+        print("       python bacchaLM.py generate \"traffic jam is\"")
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+    if cmd == "train":
+        train()
+    elif cmd == "generate":
+        prompt = sys.argv[2] if len(sys.argv) > 2 else "the"
+        n = int(sys.argv[3]) if len(sys.argv) > 3 else 15
+        print(generate(prompt, n_words=n))
+    else:
+        print(f"Unknown command: {cmd}")
+        sys.exit(1)
