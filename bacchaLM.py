@@ -52,6 +52,8 @@ def make_dataset(words, word_to_id):
 
 
 
+#-------------------------------------------------------------------------------------------------------------------------------------------------
+
 #softmax - Converts a vector of raw scores into a probability distribution.
 def softmax(x, axis=-1):
     x = x - x.max(axis=axis, keepdims=True)
@@ -69,4 +71,38 @@ def relu(x):
 def init_linear(in_dim, out_dim, scale=0.1):
     return (np.random.randn(in_dim, out_dim) * scale).astype(np.float32)
 
+#-------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------
+
+#entire model as a dictionary of arrays.
+def init_params(V):
+    return {
+        "E":    (np.random.randn(V, D) * 0.1).astype(np.float32),   # token embeddings
+        "P":    (np.random.randn(T, D) * 0.1).astype(np.float32),   # position embeddings
+        "Wq":   init_linear(D, D),
+        "Wk":   init_linear(D, D),
+        "Wv":   init_linear(D, D),
+        "Wo":   init_linear(D, D),
+        "W1":   init_linear(D, 4 * D),
+        "b1":   np.zeros(4 * D, dtype=np.float32),
+        "W2":   init_linear(4 * D, D),
+        "b2":   np.zeros(D, dtype=np.float32),
+        "Wout": init_linear(D, V),
+        "bout": np.zeros(V, dtype=np.float32),
+    }
+
+'''
+Param	            Shape	            Purpose
+E	                (V, D)	            Token embedding table. Row i = vector for word id i.
+P	                (T, D)	            Position embedding. Row t = vector for position t.
+Wq, Wk, Wv	        (D, D)	            Attention projections: query, key, value.
+Wo	                (D, D)	            Attention output projection (back to D).
+W1, b1	            (D, 4D), (4D,)	    Feedforward layer 1. Expands 4×.
+W2, b2	            (4D, D), (D,)	    Feedforward layer 2. Compresses back.
+Wout, bout	        (D, V), (V,)	    Output projection to vocab size.
+'''
 
